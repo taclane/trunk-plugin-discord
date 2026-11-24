@@ -251,8 +251,10 @@ async fn on_event(ctx: &serenity::Context, event: &serenity::FullEvent, data: &D
                     let hello = CreateEmbed::new()
                         .title("Trunk Recorder is here")
                         .color(RED)
-                        .description("Someone with **Manage Server** can run `/setup` to pick a voice channel for live audio and what to post where. `/info` and `/rates` work for everyone.");
-                    let _ = ch.send_message(ctx, serenity::CreateMessage::new().embed(hello)).await;
+                        .description("Someone with **Manage Server** can press **Set up** (or run `/setup` in a channel) to pick what to post where, a voice channel for live audio, and who may use the bot. `/help` lists the commands.");
+                    let start = serenity::CreateButton::new("trp-setup:start").label("Set up").style(serenity::ButtonStyle::Primary);
+                    let m = serenity::CreateMessage::new().embed(hello).components(vec![serenity::CreateActionRow::Buttons(vec![start])]);
+                    let _ = ch.send_message(ctx, m).await;
                 }
             }
         }

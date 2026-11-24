@@ -318,33 +318,37 @@ pub async fn log(
 /// Send a test post to each feed of this channel, to see it's set up right
 #[poise::command(slash_command, guild_only, default_member_permissions = "MANAGE_GUILD")]
 pub async fn test(ctx: Ctx<'_>) -> Result<(), Error> {
-    let sh = &ctx.data().shared;
-    let channel = ctx.channel_id();
-    let feeds: Vec<_> = sh.feeds().into_iter().filter(|f| f.channel_id() == Some(channel.get())).collect();
-    if feeds.is_empty() {
-        ctx.send(CreateReply::default().content("This channel has no feeds: /setup here picks what it gets.").ephemeral(true)).await?;
-        return Ok(());
-    }
     ctx.defer_ephemeral().await?;
+    let said = test_posts(&ctx.serenity_context().http, &ctx.data().shared, ctx.channel_id().get()).await;
+    ctx.send(CreateReply::default().content(said.join("\n")).ephemeral(true)).await?;
+    Ok(())
+}
+
+/// A test post for each feed of `channel` (what it gets, whom it would mention, without
+/// mentioning them): how each went.
+pub async fn test_posts(http: &serenity::Http, sh: &crate::state::Shared, channel: u64) -> Vec<String> {
+    let feeds: Vec<_> = sh.feeds().into_iter().filter(|f| f.channel_id() == Some(channel)).collect();
+    if feeds.is_empty() {
+        return vec!["This channel has no feeds: /setup here picks what it gets.".into()];
+    }
     let mut said = Vec::new();
     for f in &feeds {
         let mut e = CreateEmbed::new()
             .title("Test post")
             .color(GRAY)
             .description(format!("This channel gets **{}**{}.", f.event.label(), if f.enabled { "" } else { " (switched off)" }))
-            .footer(CreateEmbedFooter::new(format!("Sent by /test · feed {}", f.title())));
+            .footer(CreateEmbedFooter::new(format!("Sent by a test · feed {}", f.title())));
         if !f.mention.trim().is_empty() {
             // (Shown, not sent: a test shouldn't ping anyone.)
             e = e.field("Its posts mention", f.mention.clone(), false);
         }
         let m = CreateMessage::new().embed(e).allowed_mentions(serenity::CreateAllowedMentions::new());
-        said.push(match channel.send_message(ctx, m).await {
+        said.push(match serenity::ChannelId::new(channel).send_message(http, m).await {
             Ok(_) => format!("✓ {}", f.title()),
             Err(e) => format!("✗ {}: {e}", f.title()),
         });
     }
-    ctx.send(CreateReply::default().content(said.join("\n")).ephemeral(true)).await?;
-    Ok(())
+    said
 }
 
 #[cfg(test)]

@@ -45,72 +45,175 @@ fn value(e: Event) -> &'static str {
     }
 }
 
-/// The panel for server `g`, run in `channel`.
-fn panel(sh: &Shared, cache: &serenity::Cache, g: u64, channel: u64) -> (CreateEmbed, Vec<CreateActionRow>) {
+/// The panel's pages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    /// What the channel it's run in gets.
+    Channel,
+    /// Live audio: the voice channel, its volume, tone threads playing there.
+    Live,
+    /// Who may set the bot up, and who may use it.
+    Access,
+}
+
+impl Page {
+    fn id(self) -> &'static str {
+        match self {
+            Page::Channel => "channel",
+            Page::Live => "live",
+            Page::Access => "access",
+        }
+    }
+
+    fn of(id: &str) -> Page {
+        match id {
+            "live" => Page::Live,
+            "access" => Page::Access,
+            _ => Page::Channel,
+        }
+    }
+}
+
+/// The panel for server `g`, run in `channel`, at `page`: the server's setup at a glance, the
+/// page's menus, and a row to move between pages.
+pub fn panel(sh: &Shared, cache: &serenity::Cache, g: u64, channel: u64, page: Page) -> (CreateEmbed, Vec<CreateActionRow>) {
     let server = sh.server(g).unwrap_or_default();
     let name = crate::names::guild(cache, g).unwrap_or_else(|| "this server".into());
     let live = match server.voice() {
-        Some(v) => format!("🔊 <#{v}>"),
-        None => "Off. Pick a voice channel below to play followed talkgroups there.".into(),
+        Some(v) => format!("🔊 <#{v}> · volume {}", if server.live.volume == 0.0 { "usual".to_string() } else { format!("{:+}%", server.live.volume) }),
+        None => "Off".into(),
     };
     let here: Vec<Feed> = server.feeds.iter().filter(|f| f.channel_id() == Some(channel)).cloned().collect();
-    let posts = if here.is_empty() {
-        "Nothing yet. Pick below what it should get.".to_string()
-    } else {
-        here.iter().map(|f| format!("• {}", f.describe())).collect::<Vec<_>>().join("\n")
+    let posts = if here.is_empty() { "Nothing yet".to_string() } else { here.iter().map(|f| format!("• {}", f.describe())).collect::<Vec<_>>().join("\n") };
+    let others = server.feeds.iter().filter(|f| f.channel_id().is_some_and(|c| c != channel)).count();
+    let names = |ids: &[String], named: &str, none: &str| {
+        if ids.iter().all(|x| x.trim().is_empty()) {
+            none.to_string()
+        } else if named.is_empty() {
+            crate::names::who(cache, g, ids)
+        } else {
+            named.to_string()
+        }
     };
-    let e = CreateEmbed::new()
+    let admins = names(&server.access.admins, &server.access.admin_names, "Manage Server only");
+    let users = names(&server.access.users, &server.access.user_names, "Everyone");
+    let (how, footer) = match page {
+        Page::Channel => (
+            "Pick what this channel gets. Each pick is a feed; unpick it and it goes.",
+            "/feed edit narrows a feed to some systems or talkgroups. Run /setup in another channel to set that one up.",
+        ),
+        Page::Live => (
+            "Pick a voice channel to play followed talkgroups in (a thread's 🔊 Live audio, /live follow).",
+            "Live audio plays one talkgroup at a time, emergencies first.",
+        ),
+        Page::Access => (
+            "Pick the roles or people who are the bot's admins here, and those who may use it. Anyone with Manage Server is always an admin.",
+            "No users picked: everyone may use it.",
+        ),
+    };
+    let mut e = CreateEmbed::new()
         .title(format!("Set up Trunk Recorder in {name}"))
+        .description(how)
         .color(if server.voice().is_some() || !here.is_empty() { GREEN } else { GRAY })
-        .field("Live audio", live, false)
-        .field(format!("<#{channel}> gets"), posts, false)
-        .footer(CreateEmbedFooter::new(
-            "Changes are saved as you make them. Run /setup in another channel to set that one up. /feed edit narrows a feed to some talkgroups.",
-        ));
-    let mut rows = Vec::new();
-    let voice = CreateSelectMenuKind::Channel {
-        channel_types: Some(vec![ChannelType::Voice, ChannelType::Stage]),
-        default_channels: server.voice().map(|v| vec![serenity::ChannelId::new(v)]),
-    };
-    rows.push(CreateActionRow::SelectMenu(
-        CreateSelectMenu::new(format!("{PREFIX}:voice"), voice).placeholder("Live audio: pick a voice channel").min_values(1).max_values(1),
-    ));
-    let options: Vec<CreateSelectMenuOption> = KINDS
-        .iter()
-        .map(|(e, d)| CreateSelectMenuOption::new(capital(e.label()), value(*e)).description(*d).default_selection(here.iter().any(|f| f.event == *e)))
-        .collect();
-    rows.push(CreateActionRow::SelectMenu(
-        CreateSelectMenu::new(format!("{PREFIX}:post:{channel}"), CreateSelectMenuKind::String { options })
-            .placeholder("What this channel gets")
-            .min_values(0)
-            .max_values(KINDS.len() as u8),
-    ));
-    if server.voice().is_some() {
-        let options: Vec<CreateSelectMenuOption> = (-12..=12)
-            .rev()
-            .map(|step| {
-                let pct = step * 25;
-                let label = if step == 0 { "Volume: usual".to_string() } else { format!("Volume: {pct:+}%") };
-                CreateSelectMenuOption::new(label, pct.to_string()).default_selection((server.live.volume - pct as f64).abs() < 0.5)
-            })
-            .collect();
-        rows.push(CreateActionRow::SelectMenu(
-            CreateSelectMenu::new(format!("{PREFIX}:volume"), CreateSelectMenuKind::String { options })
-                .placeholder("Live audio volume")
-                .min_values(1)
-                .max_values(1),
-        ));
+        .field(format!("<#{channel}> gets"), posts, false);
+    if others > 0 {
+        e = e.field("Other channels", format!("{others} feed{}", if others == 1 { "" } else { "s" }), true);
     }
-    let mut buttons = vec![CreateButton::new(format!("{PREFIX}:check")).label("Check access").style(ButtonStyle::Secondary)];
-    if server.voice().is_some() {
-        buttons.insert(0, CreateButton::new(format!("{PREFIX}:liveoff")).label("Live audio off").style(ButtonStyle::Secondary));
-        if let Some(f) = here.iter().find(|f| f.event.threads()) {
-            let (label, style) =
-                if f.live { ("🔊 Tone threads play live: on", ButtonStyle::Success) } else { ("🔊 Tone threads play live: off", ButtonStyle::Secondary) };
-            buttons.insert(0, CreateButton::new(format!("{PREFIX}:tonelive:{channel}")).label(label).style(style));
+    e = e
+        .field("Live audio", live, true)
+        .field("Admins", admins, true)
+        .field("Users", users, true)
+        .footer(CreateEmbedFooter::new(format!("Changes are saved as you make them. {footer}")));
+    let mut rows = Vec::new();
+    match page {
+        Page::Channel => {
+            let options: Vec<CreateSelectMenuOption> = KINDS
+                .iter()
+                .map(|(e, d)| CreateSelectMenuOption::new(capital(e.label()), value(*e)).description(*d).default_selection(here.iter().any(|f| f.event == *e)))
+                .collect();
+            rows.push(CreateActionRow::SelectMenu(
+                CreateSelectMenu::new(format!("{PREFIX}:post:{channel}"), CreateSelectMenuKind::String { options })
+                    .placeholder("What this channel gets")
+                    .min_values(0)
+                    .max_values(KINDS.len() as u8),
+            ));
+            let mut b = vec![CreateButton::new(format!("{PREFIX}:check")).label("Check access").style(ButtonStyle::Secondary)];
+            if !here.is_empty() {
+                b.push(CreateButton::new(format!("{PREFIX}:test:{channel}")).label("Send a test post").style(ButtonStyle::Secondary));
+            }
+            rows.push(CreateActionRow::Buttons(b));
+        }
+        Page::Live => {
+            let voice = CreateSelectMenuKind::Channel {
+                channel_types: Some(vec![ChannelType::Voice, ChannelType::Stage]),
+                default_channels: server.voice().map(|v| vec![serenity::ChannelId::new(v)]),
+            };
+            rows.push(CreateActionRow::SelectMenu(
+                CreateSelectMenu::new(format!("{PREFIX}:voice"), voice).placeholder("Live audio: pick a voice channel").min_values(1).max_values(1),
+            ));
+            if server.voice().is_some() {
+                let options: Vec<CreateSelectMenuOption> = (-12..=12)
+                    .rev()
+                    .map(|step| {
+                        let pct = step * 25;
+                        let label = if step == 0 { "Volume: usual".to_string() } else { format!("Volume: {pct:+}%") };
+                        CreateSelectMenuOption::new(label, pct.to_string()).default_selection((server.live.volume - pct as f64).abs() < 0.5)
+                    })
+                    .collect();
+                rows.push(CreateActionRow::SelectMenu(
+                    CreateSelectMenu::new(format!("{PREFIX}:volume"), CreateSelectMenuKind::String { options })
+                        .placeholder("Live audio volume")
+                        .min_values(1)
+                        .max_values(1),
+                ));
+                let mut b = vec![CreateButton::new(format!("{PREFIX}:liveoff")).label("Live audio off").style(ButtonStyle::Secondary)];
+                if let Some(f) = here.iter().find(|f| f.event.threads()) {
+                    let (label, style) = if f.live {
+                        ("🔊 This channel's tone threads play live: on", ButtonStyle::Success)
+                    } else {
+                        ("🔊 This channel's tone threads play live: off", ButtonStyle::Secondary)
+                    };
+                    b.insert(0, CreateButton::new(format!("{PREFIX}:tonelive:{channel}")).label(label).style(style));
+                }
+                rows.push(CreateActionRow::Buttons(b));
+            }
+        }
+        Page::Access => {
+            let split = |ids: &[String]| {
+                let guild = cache.guild(serenity::GuildId::new(g));
+                let (mut roles, mut people) = (Vec::new(), Vec::new());
+                for id in ids.iter().filter_map(|x| crate::access::id_of(x)) {
+                    if guild.as_ref().is_some_and(|x| x.roles.contains_key(&serenity::RoleId::new(id))) {
+                        roles.push(serenity::RoleId::new(id));
+                    } else {
+                        people.push(serenity::UserId::new(id));
+                    }
+                }
+                (Some(people), Some(roles))
+            };
+            for (id, ids, what) in
+                [("admins", &server.access.admins, "Admins: roles or people"), ("users", &server.access.users, "Users: roles or people (none: everyone)")]
+            {
+                let (default_users, default_roles) = split(ids);
+                rows.push(CreateActionRow::SelectMenu(
+                    CreateSelectMenu::new(format!("{PREFIX}:{id}"), CreateSelectMenuKind::Mentionable { default_users, default_roles })
+                        .placeholder(what)
+                        .min_values(0)
+                        .max_values(25),
+                ));
+            }
         }
     }
-    rows.push(CreateActionRow::Buttons(buttons));
+    let nav = [(Page::Channel, "This channel"), (Page::Live, "Live audio"), (Page::Access, "Access")]
+        .into_iter()
+        .map(|(p, label)| {
+            CreateButton::new(format!("{PREFIX}:page:{}:{channel}", p.id()))
+                .label(label)
+                .style(if p == page { ButtonStyle::Primary } else { ButtonStyle::Secondary })
+                .disabled(p == page)
+        })
+        .collect();
+    rows.push(CreateActionRow::Buttons(nav));
     (e, rows)
 }
 
@@ -149,7 +252,7 @@ pub async fn setup(
             said = vec![format!("Not saved: {e}")];
         }
     }
-    let (e, rows) = panel(&sh, &ctx.serenity_context().cache, g, ctx.channel_id().get());
+    let (e, rows) = panel(&sh, &ctx.serenity_context().cache, g, ctx.channel_id().get(), Page::Channel);
     ctx.send(CreateReply::default().content(said.join(" ")).embed(e).components(rows).ephemeral(true)).await?;
     Ok(())
 }
@@ -163,7 +266,52 @@ pub async fn component(ctx: &serenity::Context, sh: &Shared, b: &ComponentIntera
     // (Only admins get here: see bot::on_event.)
     let who = b.user.global_name.clone().unwrap_or_else(|| b.user.name.clone());
     let mut channel = b.channel_id.get();
-    match (rest.split(':').next().unwrap_or(""), &b.data.kind) {
+    let action = rest.split(':').next().unwrap_or("");
+    let mut page = match action {
+        "voice" | "volume" | "tonelive" | "liveoff" => Page::Live,
+        "admins" | "users" => Page::Access,
+        _ => Page::Channel,
+    };
+    match (action, &b.data.kind) {
+        // The welcome's Set up: the panel, to whoever pressed it.
+        ("start", _) => {
+            let (e, rows) = panel(sh, &ctx.cache, g, channel, Page::Channel);
+            b.create_response(ctx, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().embed(e).components(rows).ephemeral(true)))
+                .await?;
+            return Ok(true);
+        }
+        ("page", _) => {
+            let mut p = rest.split(':').skip(1);
+            page = Page::of(p.next().unwrap_or(""));
+            channel = p.next().and_then(|c| c.parse().ok()).unwrap_or(channel);
+        }
+        ("admins" | "users", ComponentInteractionDataKind::MentionableSelect { values }) => {
+            let ids: Vec<String> = values.iter().map(|v| v.get().to_string()).collect();
+            let n = ids.len();
+            let admins = action == "admins";
+            let r = sh.edit_server(g, move |s| {
+                if admins {
+                    s.access.admins = ids;
+                } else {
+                    s.access.users = ids;
+                }
+                Ok(String::new())
+            });
+            match r {
+                Ok(_) => sh.host.info(format!("{action} in server {g}: {n} picked, by {who}")),
+                Err(e) => {
+                    b.create_response(ctx, say(format!("Not saved: {e}"))).await?;
+                    return Ok(true);
+                }
+            }
+        }
+        ("test", _) => {
+            channel = rest.split(':').nth(1).and_then(|c| c.parse().ok()).unwrap_or(channel);
+            b.defer_ephemeral(ctx).await?;
+            let said = crate::admin::test_posts(&ctx.http, sh, channel).await;
+            let _ = b.create_followup(ctx, serenity::CreateInteractionResponseFollowup::new().content(said.join("\n")).ephemeral(true)).await;
+            return Ok(true);
+        }
         ("voice", ComponentInteractionDataKind::ChannelSelect { values }) => {
             if let Some(v) = values.first() {
                 let _ = sh.edit_server(g, |s| {
@@ -243,7 +391,7 @@ pub async fn component(ctx: &serenity::Context, sh: &Shared, b: &ComponentIntera
         }
         _ => return Ok(false),
     }
-    let (e, rows) = panel(sh, &ctx.cache, g, channel);
+    let (e, rows) = panel(sh, &ctx.cache, g, channel, page);
     b.create_response(ctx, CreateInteractionResponse::UpdateMessage(CreateInteractionResponseMessage::new().embed(e).components(rows))).await?;
     Ok(true)
 }
