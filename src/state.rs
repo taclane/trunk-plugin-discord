@@ -61,6 +61,8 @@ pub struct Shared {
     pub only_guild: Mutex<Option<u64>>,
     /// To the bot's poster, while a bot runs.
     pub posts: Mutex<Option<mpsc::UnboundedSender<crate::post::Post>>>,
+    /// The commands as built, to register in each server with its access ([`crate::access::commands_for`]).
+    pub commands: Mutex<Vec<serenity::CreateCommand>>,
 }
 
 impl Shared {
@@ -92,6 +94,7 @@ impl Shared {
             only_guild: Mutex::new(None),
             data_dir,
             posts: Mutex::new(None),
+            commands: Mutex::default(),
         };
         sh.follow_renames();
         sh
@@ -199,6 +202,20 @@ impl Shared {
             drop(cur);
             self.save(&s);
             self.live.changed.notify_one();
+            // A server's admins named or cleared: its commands are shown to them now.
+            let shown = |x: &Settings, g: u64| x.server(g).is_some_and(|v| v.access.names_admins());
+            let regs: Vec<u64> = s.guilds().into_iter().filter(|&g| shown(&was, g) != shown(&s, g)).collect();
+            if let (false, Ok(rt)) = (regs.is_empty(), tokio::runtime::Handle::try_current()) {
+                for g in regs {
+                    let Ok((rest, path, body)) = crate::bot::registration(self, g) else { continue };
+                    let host = self.host.clone();
+                    rt.spawn(async move {
+                        if let Err(e) = rest.put(&path, &body).await {
+                            host.warn(format!("couldn't show the commands to server {g}'s admins: {e:?}"));
+                        }
+                    });
+                }
+            }
         }
         Ok(said)
     }

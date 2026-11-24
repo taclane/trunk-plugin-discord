@@ -120,21 +120,37 @@ The invite link the bot logs asks for all of these:
 - **Forums:** Manage Channels (to add the forum's tags).
 - **Live audio:** Connect, Speak, Use Soundboard, Set Voice Channel Status.
 
+## Who may use it
+
+Each server has two lists, under **Who may use the bot** on its row on TRP's page. Each one
+takes roles or people, by ID: right-click one and pick Copy ID, or paste a mention.
+
+- **Admins** set the bot up: `/setup`, `/feed`, `/board`, mutes, opening threads. Anyone with
+  Manage Server always counts as one, so a server can't lock itself out. Empty: only them.
+- **Users** use it: every other command, live audio, and the buttons on its posts. Empty:
+  everyone in the server. When it names roles, only those roles and the admins may.
+
+Closing or deleting a tone thread takes an admin, or Manage Threads.
+
+The same check covers slash commands, right-click commands, buttons, menus and the words typed in
+live audio's chat. When a server names admins of its own, its admin commands are shown to
+everyone in Discord's command list, and the bot refuses them to anyone who isn't an admin.
+Discord's own per-command settings (Server Settings → Integrations) still apply on top of these.
+
 ## Commands
 
 | Command | Who | What |
 | --- | --- | --- |
-| `/info` | everyone | uptime, calls, posts, systems, active calls |
-| `/rates [system]` | everyone | control channel decode rates |
-| `/active [system]` | everyone | calls going on now |
-| `/recent [talkgroup] [system] [radio] [count]` | everyone | the latest recorded calls, with links |
-| `/systems` | everyone | TRP's systems |
-| `/threads` | everyone | the tone threads open now |
-| `/feed add what …` | Manage Channels | post something to this channel (or another) |
-| `/feed list [all]` | Manage Channels | this channel's feeds, or every channel's |
-| `/feed remove name`, `/feed on name`, `/feed off name` | Manage Channels | |
+| `/info` | users | uptime, calls, posts, systems, active calls |
+| `/rates [system]` | users | control channel decode rates |
+| `/active [system]` | users | calls going on now |
+| `/recent [talkgroup] [system] [radio] [count]` | users | the latest recorded calls, with links |
+| `/systems` | users | TRP's systems |
+| `/threads` | users | the tone threads open now |
+| `/feed add what …` | admins | post something to this channel (or another) |
+| `/feed list [all]` | admins | this channel's feeds, or every channel's |
+| `/feed remove name`, `/feed on name`, `/feed off name` | admins | |
 
-Server admins can change who may use each command in Server Settings → Integrations.
 
 ## Setting up
 

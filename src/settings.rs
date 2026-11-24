@@ -98,6 +98,8 @@ pub struct Server {
     /// Right-click the server, Copy Server ID (Developer Mode on: User Settings → Advanced).
     #[schemars(extend("x-required" = true))]
     pub id: String,
+    /// Who may use the bot
+    pub access: Access,
     /// Live audio
     ///
     /// Followed talkgroups played into a voice channel as they're heard (a thread's 🔊 Live audio
@@ -108,6 +110,34 @@ pub struct Server {
     /// What the bot posts in this server, and where. Feeds can also be added in Discord (/feed
     /// add in a channel): those are kept by the plugin, and /feed list shows both.
     pub feeds: Vec<Feed>,
+}
+
+/// Who may set the bot up in a server, and who may use it ([`crate::access`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Access {
+    /// Admins
+    ///
+    /// Roles or people (their IDs: right-click, Copy ID) who may set the bot up: /setup, feeds,
+    /// boards, mutes. Anyone with Manage Server always may. Empty: only them.
+    pub admins: Vec<String>,
+    /// Admins, by name
+    ///
+    /// Filled in by the plugin.
+    #[schemars(extend("readOnly" = true))]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub admin_names: String,
+    /// Users
+    ///
+    /// Roles or people who may use the bot: its commands, live audio, a thread's buttons. Empty:
+    /// everyone in the server.
+    pub users: Vec<String>,
+    /// Users, by name
+    ///
+    /// Filled in by the plugin.
+    #[schemars(extend("readOnly" = true))]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub user_names: String,
 }
 
 /// A server's live audio.
@@ -536,6 +566,11 @@ impl Settings {
             }
             if !s.live.channel.trim().is_empty() && s.voice().is_none() {
                 return Err(format!("{what}: the live audio channel isn't a channel ID ({:?})", s.live.channel));
+            }
+            for (list, x) in s.access.admins.iter().map(|x| ("admins", x)).chain(s.access.users.iter().map(|x| ("users", x))) {
+                if !x.trim().is_empty() && crate::access::id_of(x).is_none() {
+                    return Err(format!("{what}: {list}: {x:?} isn't a role's or person's ID (right-click it, Copy ID)"));
+                }
             }
             check_feeds(&s.feeds).map_err(|e| format!("{what}: {e}"))?;
         }

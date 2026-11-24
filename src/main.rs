@@ -3,6 +3,7 @@
 //! feeds (what goes where) come from its settings page and from `/feed` in Discord, which it keeps
 //! in its data folder.
 
+mod access;
 mod alerts;
 mod board;
 mod bot;
@@ -172,6 +173,17 @@ impl Plugin for Discord {
         let (old, new) = (old.normalized(None), setup.config.clone().normalized(None));
         if old.token != new.token || old.live_phrases != new.live_phrases || (pending == 0 && old.guilds() != new.guilds()) {
             self.restart();
+        } else {
+            // A server's admins named or cleared: its admin commands are shown to others now.
+            let shown = |s: &Settings, g: u64| s.server(g).is_some_and(|x| x.access.names_admins());
+            for g in new.guilds().into_iter().filter(|&g| shown(&old, g) != shown(&new, g)) {
+                let sh = self.shared.clone();
+                self.rt.spawn(async move {
+                    if let Err(e) = bot::register_in(&sh, g).await {
+                        sh.host.warn(format!("couldn't show the commands to server {g}'s admins: {e}"));
+                    }
+                });
+            }
         }
         self.rates_at = None;
         self.shared.live.changed.notify_one();

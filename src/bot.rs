@@ -27,6 +27,64 @@ pub type Ctx<'a> = poise::Context<'a, Data, Error>;
 const PERMISSIONS: u64 = 1024 | 2048 | 16384 | 32768 | 65536 | (1 << 4) | (1 << 20) | (1 << 21) | (1 << 34) | (1 << 35) | (1 << 38) | (1 << 42) | (1 << 48);
 
 /// A bot running: stop it with [`Bot::stop`].
+/// Every command the bot has.
+pub fn commands() -> Vec<poise::Command<Data, Error>> {
+    vec![
+        info(),
+        rates(),
+        active(),
+        recent(),
+        systems(),
+        threads(),
+        feed(),
+        menus::radio(),
+        menus::tg(),
+        menus::mutes(),
+        menus::unmute(),
+        menus::live(),
+        menus::board(),
+        menus::notify(),
+        menus::thread(),
+        menus::menu_follow(),
+        menus::menu_thread(),
+        menus::menu_mute(),
+        menus::menu_recent(),
+        crate::setup::setup(),
+    ]
+}
+
+/// Before every command: whoever runs it may ([`crate::access`]); if not, they're told why.
+async fn command_check(ctx: Ctx<'_>) -> Result<bool, Error> {
+    let poise::Context::Application(a) = ctx else { return Ok(true) };
+    let i = a.interaction;
+    let Some(who) = crate::access::Who::of(i.guild_id, &i.user, i.member.as_deref()) else { return Ok(true) };
+    let server = ctx.data().shared.server(who.guild).unwrap_or_default();
+    let name = ctx.command().context_menu_name.as_deref().unwrap_or(&ctx.command().name).to_string();
+    let root = ctx.parent_commands().first().map_or(name, |p| p.name.to_string());
+    match server.access.may(crate::access::command_tier(&root), &who) {
+        Ok(()) => Ok(true),
+        Err(why) => {
+            ctx.send(CreateReply::default().content(why).ephemeral(true)).await?;
+            Ok(false)
+        }
+    }
+}
+
+/// What registering the commands in server `g` sends: the client, the path and the commands as
+/// its access has them shown.
+pub fn registration(sh: &Shared, g: u64) -> Result<(crate::rest::Rest, String, serde_json::Value), String> {
+    let (Some(rest), Some(me)) = (sh.rest(), *sh.me.lock().unwrap()) else { return Err("not logged in".into()) };
+    let access = sh.server(g).unwrap_or_default().access;
+    let body = crate::access::commands_for(&sh.commands.lock().unwrap(), &access);
+    Ok((rest, format!("/applications/{me}/guilds/{g}/commands"), body))
+}
+
+/// Register the commands in server `g`, as its access has them shown (one bulk overwrite).
+pub async fn register_in(sh: &Shared, g: u64) -> Result<(), String> {
+    let (rest, path, body) = registration(sh, g)?;
+    rest.put(&path, &body).await.map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
 pub struct Bot {
     shards: Arc<serenity::ShardManager>,
     shared: Arc<Shared>,
@@ -47,30 +105,10 @@ impl Bot {
         }
         let framework = poise::Framework::builder()
             .options(poise::FrameworkOptions {
-                commands: vec![
-                    info(),
-                    rates(),
-                    active(),
-                    recent(),
-                    systems(),
-                    threads(),
-                    feed(),
-                    menus::radio(),
-                    menus::tg(),
-                    menus::mutes(),
-                    menus::unmute(),
-                    menus::live(),
-                    menus::board(),
-                    menus::notify(),
-                    menus::thread(),
-                    menus::menu_follow(),
-                    menus::menu_thread(),
-                    menus::menu_mute(),
-                    menus::menu_recent(),
-                    crate::setup::setup(),
-                ],
+                commands: commands(),
+                command_check: Some(|ctx| Box::pin(command_check(ctx))),
                 on_error: |e| Box::pin(on_error(e)),
-                event_handler: |fw, event| Box::pin(on_event(fw.serenity_context, event, fw.user_data, &fw.options.commands)),
+                event_handler: |fw, event| Box::pin(on_event(fw.serenity_context, event, fw.user_data)),
                 ..Default::default()
             })
             .setup(move |ctx, ready, framework| {
@@ -100,6 +138,7 @@ impl Bot {
                             servers.push(g);
                         }
                     }
+                    *sh.commands.lock().unwrap() = poise::builtins::create_application_commands(&framework.options().commands);
                     register(ctx, ready, &framework.options().commands, &servers, &sh).await?;
                     tokio::spawn(crate::live::run(sh.clone(), ctx.clone()));
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -167,7 +206,8 @@ async fn register(
             continue;
         }
         note(had, mine, &mut gone);
-        if let Err(e) = g.set_commands(ctx, if mine { ours.clone() } else { Vec::new() }).await {
+        let set = if mine { register_in(sh, g.get()).await } else { g.set_commands(ctx, Vec::new()).await.map(|_| ()).map_err(|e| e.to_string()) };
+        if let Err(e) = set {
             sh.host.warn(format!("couldn't set the commands in server {g}: {e}"));
         }
     }
@@ -184,7 +224,7 @@ async fn register(
 
 /// Buttons pressed (the threads' headers, the live audio panel), and words in the live audio
 /// channel's chat (with phrases on).
-async fn on_event(ctx: &serenity::Context, event: &serenity::FullEvent, data: &Data, commands: &[poise::Command<Data, Error>]) -> Result<(), Error> {
+async fn on_event(ctx: &serenity::Context, event: &serenity::FullEvent, data: &Data) -> Result<(), Error> {
     let sh = &data.shared;
     match event {
         // Invited to a server: it's one of its own from now on, its commands there at once.
@@ -195,7 +235,7 @@ async fn on_event(ctx: &serenity::Context, event: &serenity::FullEvent, data: &D
             }
             if *is_new == Some(true) {
                 sh.host.info(format!("joined server {name} ({g})"));
-                if let Err(e) = guild.id.set_commands(ctx, poise::builtins::create_application_commands(commands)).await {
+                if let Err(e) = register_in(sh, g).await {
                     sh.host.warn(format!("couldn't register the commands in {name}: {e}"));
                 }
                 if let Some(ch) = guild.system_channel_id {
@@ -221,6 +261,14 @@ async fn on_event(ctx: &serenity::Context, event: &serenity::FullEvent, data: &D
             sh.renamed.notify_one();
         }
         serenity::FullEvent::InteractionCreate { interaction: serenity::Interaction::Component(b) } => {
+            if let Some(who) = crate::access::Who::of(b.guild_id, &b.user, b.member.as_ref()) {
+                let server = sh.server(who.guild).unwrap_or_default();
+                if let Err(why) = server.access.may(crate::access::component_tier(&b.data.custom_id), &who) {
+                    let say = serenity::CreateInteractionResponseMessage::new().content(why).ephemeral(true);
+                    let _ = b.create_response(ctx, serenity::CreateInteractionResponse::Message(say)).await;
+                    return Ok(());
+                }
+            }
             let handled = match crate::thread::button(ctx, sh, b).await {
                 Ok(true) => Ok(true),
                 Ok(false) => match crate::live::button(ctx, sh, b).await {
@@ -236,7 +284,10 @@ async fn on_event(ctx: &serenity::Context, event: &serenity::FullEvent, data: &D
         serenity::FullEvent::Message { new_message: m } if !m.author.bot => {
             let s = sh.settings();
             let g = m.guild_id.map_or(0, |g| g.get());
-            if s.live_phrases && sh.server(g).and_then(|x| x.voice()) == Some(m.channel_id.get()) {
+            let roles: Vec<u64> = m.member.as_ref().map_or_else(Vec::new, |p| p.roles.iter().map(|r| r.get()).collect());
+            let who = crate::access::Who { guild: g, user: m.author.id.get(), roles, manage_guild: false };
+            let may = sh.server(g).is_some_and(|x| x.access.user(&who));
+            if s.live_phrases && may && sh.server(g).and_then(|x| x.voice()) == Some(m.channel_id.get()) {
                 let who = m.author.global_name.clone().unwrap_or_else(|| m.author.name.clone());
                 if let Some(answer) = crate::live::phrase(sh, g, &m.content, &who) {
                     sh.host.info(format!("live audio, {who}: {:?} → {answer}", m.content));

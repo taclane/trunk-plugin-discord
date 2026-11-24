@@ -156,10 +156,7 @@ pub async fn component(ctx: &serenity::Context, sh: &Shared, b: &ComponentIntera
     let Some(rest) = id.strip_prefix(&format!("{PREFIX}:")) else { return Ok(false) };
     let g = b.guild_id.map_or(0, |g| g.get());
     let say = |text: String| CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(text).ephemeral(true));
-    if !b.member.as_ref().and_then(|m| m.permissions).is_some_and(|p| p.manage_guild()) {
-        b.create_response(ctx, say("Setting the bot up takes Manage Server.".into())).await?;
-        return Ok(true);
-    }
+    // (Only admins get here: see bot::on_event.)
     let who = b.user.global_name.clone().unwrap_or_else(|| b.user.name.clone());
     let mut channel = b.channel_id.get();
     match (rest.split(':').next().unwrap_or(""), &b.data.kind) {

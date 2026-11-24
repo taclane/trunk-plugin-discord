@@ -621,7 +621,8 @@ pub async fn button(ctx: &serenity::Context, shared: &Shared, b: &ComponentInter
         let m = CreateInteractionResponseMessage::new().embed(header(shared, t, ended));
         CreateInteractionResponse::UpdateMessage(if ended.is_some() { m.components(Vec::new()) } else { m.components(buttons(shared, t)) })
     };
-    let may_end = b.member.as_ref().and_then(|m| m.permissions).is_some_and(|p| p.manage_threads());
+    let admin = crate::access::Who::of(b.guild_id, &b.user, b.member.as_ref()).is_some_and(|w| shared.server(w.guild).unwrap_or_default().access.admin(&w));
+    let may_end = admin || b.member.as_ref().and_then(|m| m.permissions).is_some_and(|p| p.manage_threads());
     match action {
         "stop" | "resume" => {
             let stop = action == "stop";
@@ -674,7 +675,8 @@ pub async fn button(ctx: &serenity::Context, shared: &Shared, b: &ComponentInter
         }
         "close" | "delete" => {
             if !may_end {
-                b.create_response(ctx, say("Ending a thread takes Manage Threads. Stop posting is open to everyone.")).await?;
+                b.create_response(ctx, say("Ending a thread takes Manage Threads, or being one of the bot's admins here. Stop posting is open to everyone."))
+                    .await?;
                 return Ok(true);
             }
             let how = if action == "close" { format!("Closed by {who}") } else { format!("Ended by {who}") };

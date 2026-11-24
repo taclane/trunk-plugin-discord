@@ -39,9 +39,38 @@ fn bare(cache: &serenity::Cache, g: u64, ch: u64) -> Option<String> {
     guild.channels.get(&id).map(|c| c.name.clone()).or_else(|| guild.threads.iter().find(|t| t.id == id).map(|t| t.name.clone()))
 }
 
-/// Fill in `s`'s names from what the bot sees ([`crate::settings::Settings::named`]).
+/// Fill in `s`'s names from what the bot sees ([`crate::settings::Settings::named`]), and who
+/// each server's access names.
 pub fn fill(s: &mut crate::settings::Settings, cache: &serenity::Cache) -> bool {
-    s.named(Some(crate::bot::invite_url(cache.current_user().id.get())), |g| guild(cache, g), |g, ch| bare(cache, g, ch))
+    let mut changed = s.named(Some(crate::bot::invite_url(cache.current_user().id.get())), |g| guild(cache, g), |g, ch| bare(cache, g, ch));
+    for server in &mut s.servers {
+        let Some(g) = server.guild() else { continue };
+        let a = &mut server.access;
+        let (admins, users) = (who(cache, g, &a.admins), who(cache, g, &a.users));
+        if a.admin_names != admins || a.user_names != users {
+            (a.admin_names, a.user_names) = (admins, users);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Roles and people by name ("@Dispatch, @alex"), as listed by ID; one the bot can't see by its ID.
+pub fn who(cache: &serenity::Cache, g: u64, ids: &[String]) -> String {
+    let guild = cache.guild(GuildId::new(g));
+    ids.iter()
+        .filter_map(|x| crate::access::id_of(x))
+        .map(|id| {
+            if id == g {
+                return "@everyone".to_string();
+            }
+            let role = guild.as_ref().and_then(|x| x.roles.get(&serenity::RoleId::new(id)).map(|r| format!("@{}", r.name)));
+            let member = || guild.as_ref().and_then(|x| x.members.get(&serenity::UserId::new(id)).map(|m| format!("@{}", m.display_name())));
+            let user = || cache.user(serenity::UserId::new(id)).map(|u| format!("@{}", u.global_name.clone().unwrap_or_else(|| u.name.clone())));
+            role.or_else(member).or_else(user).unwrap_or_else(|| id.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The status: each server by name, its feeds' channels and its live audio; or what's wrong.
