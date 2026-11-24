@@ -78,8 +78,12 @@ jobs:
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        env: { RUSTFLAGS: "-C target-feature=+crt-static" }
+        # (Opus from vcpkg, built against the static C runtime as the plugin is: the copy the
+        # opus crate builds itself takes the DLL one, and won't link.)
+        env: { RUSTFLAGS: "-C target-feature=+crt-static", LIBOPUS_STATIC: "1" }
         run: |
+          vcpkg install opus:x64-windows-static
+          export LIBOPUS_LIB_DIR="$(cygpath -m "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows-static"
           cargo build --locked --release --target ${{ matrix.target }}
           echo "BIN=target/${{ matrix.target }}/release/$ID.exe" >> "$GITHUB_ENV"
 
