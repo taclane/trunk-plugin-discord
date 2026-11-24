@@ -1,0 +1,56 @@
+# Build for every platform the release does, without publishing anything: run it by hand
+# (Actions → Build check → Run workflow) before tagging, to see each platform builds.
+name: Build check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: universal-apple-darwin, os: macos-15 }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.target }}" }
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+          cargo zigbuild --locked --release --target ${{ matrix.target }}.2.28
+          echo "BIN=target/${{ matrix.target }}/release/discord" >> "$GITHUB_ENV"
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+          lipo -create -output discord target/aarch64-apple-darwin/release/discord target/x86_64-apple-darwin/release/discord
+          echo "BIN=discord" >> "$GITHUB_ENV"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env: { RUSTFLAGS: "-C target-feature=+crt-static" }
+        run: |
+          cargo build --locked --release --target ${{ matrix.target }}
+          echo "BIN=target/${{ matrix.target }}/release/discord.exe" >> "$GITHUB_ENV"
+
+      - name: It runs, and says who it is
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          "./$BIN" --describe > manifest.json
+          python3 .github/check_manifest.py manifest.json --release
