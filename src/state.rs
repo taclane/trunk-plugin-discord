@@ -28,6 +28,8 @@ struct OldServer {
 
 /// Talkgroups muted by channel, in the plugin's data folder.
 const MUTES: &str = "mutes.json";
+/// Each system's short name by its id, as last seen: to follow a rename.
+const SYSTEMS: &str = "systems.json";
 
 /// How long TRP has to answer a save before the plugin says it can't save.
 const SAVE_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
@@ -80,7 +82,7 @@ impl Shared {
     pub fn new(host: Host, settings: Settings, systems: Vec<SystemInfo>, data_dir: PathBuf) -> Shared {
         let threads = crate::thread::Threads::load(&data_dir, &host);
         let mutes = std::fs::read(data_dir.join(MUTES)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Shared {
+        let sh = Shared {
             host,
             settings: Mutex::new(settings),
             systems: Mutex::new(systems),
@@ -106,6 +108,58 @@ impl Shared {
             only_guild: Mutex::new(None),
             data_dir,
             posts: Mutex::new(None),
+        };
+        sh.follow_renames();
+        sh
+    }
+
+    /// What's kept by a system's short name (alerts, mutes, boards) follows its renames: TRP
+    /// knows it by its id, the same through them.
+    pub fn follow_renames(&self) {
+        let path = self.data_dir.join(SYSTEMS);
+        let mut known: BTreeMap<u32, String> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let now: Vec<(u32, String)> = self.systems.lock().unwrap().iter().filter(|s| s.id != 0).map(|s| (s.id, s.short_name.clone())).collect();
+        let mut changed = false;
+        for (id, name) in now {
+            match known.insert(id, name.clone()) {
+                Some(old) if old == name => continue,
+                Some(old) => {
+                    self.host.info(format!("system {old} is now {name}: its alerts, mutes and boards follow it"));
+                    self.alerts.rename(&old, &name);
+                    self.boards.rename(&old, &name);
+                    self.rename_mutes(&old, &name);
+                }
+                None => {}
+            }
+            changed = true;
+        }
+        if changed {
+            if let Ok(j) = serde_json::to_vec_pretty(&known) {
+                let tmp = path.with_extension("json.new");
+                let _ = std::fs::write(&tmp, j).and_then(|_| std::fs::rename(&tmp, &path));
+            }
+        }
+    }
+
+    fn rename_mutes(&self, old: &str, new: &str) {
+        let mut m = self.mutes.lock().unwrap();
+        let prefix = format!("{old}:");
+        let mut changed = false;
+        for x in m.values_mut().flatten() {
+            if let Some(tg) = x.strip_prefix(&prefix) {
+                *x = format!("{new}:{tg}");
+                changed = true;
+            }
+        }
+        if changed {
+            Self::save_mutes(&self.data_dir, &m);
+        }
+    }
+
+    fn save_mutes(dir: &std::path::Path, m: &BTreeMap<u64, Vec<String>>) {
+        if let Ok(j) = serde_json::to_vec_pretty(m) {
+            let tmp = dir.join(format!("{MUTES}.new"));
+            let _ = std::fs::write(&tmp, j).and_then(|_| std::fs::rename(&tmp, dir.join(MUTES)));
         }
     }
 
@@ -301,10 +355,7 @@ impl Shared {
             _ => return false,
         }
         m.retain(|_, l| !l.is_empty());
-        if let Ok(j) = serde_json::to_vec_pretty(&*m) {
-            let tmp = self.data_dir.join(format!("{MUTES}.new"));
-            let _ = std::fs::write(&tmp, j).and_then(|_| std::fs::rename(&tmp, self.data_dir.join(MUTES)));
-        }
+        Self::save_mutes(&self.data_dir, &m);
         true
     }
 
@@ -405,6 +456,26 @@ mod tests {
         assert_eq!(top.chars().last(), Some('⣿'));
         assert_eq!(bottom.chars().last(), Some('⣿'));
         assert_eq!(top.chars().filter(|&c| c == '\u{2800}').count(), 11);
+    }
+
+    /// A system renamed in TRP keeps its alerts, mutes and boards: they're found by its id.
+    #[test]
+    fn a_renamed_system_keeps_what_was_kept_by_its_name() {
+        let dir = trunk_recorder_plugin::testing::temp_dir("discord-rename");
+        std::fs::write(dir.join(SYSTEMS), r#"{"7":"county"}"#).unwrap();
+        std::fs::write(dir.join(MUTES), r#"{"9":["county:5","city:5"]}"#).unwrap();
+        std::fs::write(dir.join("alerts.json"), r#"[{"user":1,"system":"county","talkgroup":5}]"#).unwrap();
+        let (host, _) = trunk_recorder_plugin::testing::capture();
+        let systems = vec![
+            SystemInfo { id: 7, short_name: "county-p25".into(), ..Default::default() },
+            SystemInfo { id: 8, short_name: "city".into(), ..Default::default() },
+        ];
+        let sh = Shared::new(host, Settings::default(), systems, dir.clone());
+        assert!(sh.muted(9, "county-p25", 5) && sh.muted(9, "city", 5) && !sh.muted(9, "county", 5));
+        assert_eq!(sh.alerts.all()[0].system, "county-p25");
+        let known: BTreeMap<u32, String> = serde_json::from_slice(&std::fs::read(dir.join(SYSTEMS)).unwrap()).unwrap();
+        assert_eq!(known.get(&7).map(String::as_str), Some("county-p25"));
+        assert_eq!(known.get(&8).map(String::as_str), Some("city"));
     }
 
     /// What Discord changes is saved to the settings (settings.save), one save per change; the

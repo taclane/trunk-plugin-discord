@@ -143,10 +143,11 @@ impl Plugin for Discord {
             .iter()
             .map(|s| trunk_recorder_plugin::SystemInfo {
                 index: s.index,
+                id: s.id,
                 short_name: s.short_name.clone(),
                 kind: s.kind.clone(),
                 name: s.name.clone(),
-                sites: s.sites.clone(),
+                sites: s.sites.iter().map(|x| trunk_recorder_plugin::SiteInfo { id: x.id, name: x.name.clone(), ..Default::default() }).collect(),
                 ..Default::default()
             })
             .collect();
@@ -287,11 +288,12 @@ impl Plugin for Discord {
     fn status(&mut self, s: Status) {
         {
             let mut rates = self.shared.rates.lock().unwrap();
-            for sys in s.systems.iter().filter(|x| x.control_channel_hz.is_some() || x.decode_rate > 0.0) {
-                let site = if sys.site_name.is_empty() { &sys.short_name } else { &sys.site_name };
+            for sys in s.systems.iter().filter(|x| x.scope.control_channel_hz.is_some() || x.decode_rate > 0.0) {
+                let at = &sys.scope;
+                let site = if at.site_name.is_empty() { &at.short_name } else { &at.site_name };
                 let r = rates.entry(site.clone()).or_default();
-                r.system = sys.short_name.clone();
-                r.control_channel_hz = sys.control_channel_hz;
+                r.system = at.short_name.clone();
+                r.control_channel_hz = at.control_channel_hz;
                 r.active = sys.active_calls;
                 r.recording = sys.recording;
                 r.push(sys.decode_rate, s.time);

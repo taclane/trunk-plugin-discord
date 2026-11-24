@@ -93,6 +93,19 @@ impl Alerts {
         self.save(&l)
     }
 
+    /// A system renamed: its alerts follow it.
+    pub fn rename(&self, old: &str, new: &str) {
+        let mut l = self.list.lock().unwrap();
+        let mut changed = false;
+        for a in l.iter_mut().filter(|a| a.system == old) {
+            a.system = new.to_string();
+            changed = true;
+        }
+        if changed {
+            let _ = self.save(&l);
+        }
+    }
+
     /// Remove `user`'s alert described as `what`.
     pub fn remove(&self, user: u64, what: &str) -> Result<Alert, String> {
         let mut l = self.list.lock().unwrap();

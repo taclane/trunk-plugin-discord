@@ -4124,8 +4124,9 @@ checksum = "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc"
 
 [[package]]
 name = "trunk-recorder-plugin"
-version = "0.10.0"
-source = "git+https://github.com/taclane/trunk-recorder-pro?branch=feature%2Fplugin-api#7ab90955e4e24b8f47e1c691491cc466b5e0c19f"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0813a570955d17411506534c7a67f6b72f5a7a1a93f2fe7c2035cfab37e6401c"
 dependencies = [
  "schemars",
  "serde",

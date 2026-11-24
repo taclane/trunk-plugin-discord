@@ -62,6 +62,19 @@ impl Boards {
         Boards { list: Mutex::new(list), path }
     }
 
+    /// A system renamed: the boards of it follow it.
+    pub fn rename(&self, old: &str, new: &str) {
+        let mut l = self.list.lock().unwrap();
+        let mut changed = false;
+        for x in l.iter_mut().flat_map(|b| b.systems.iter_mut()).filter(|x| *x == old) {
+            *x = new.to_string();
+            changed = true;
+        }
+        if changed {
+            self.save(&l);
+        }
+    }
+
     fn save(&self, list: &[Board]) {
         if let Ok(j) = serde_json::to_vec_pretty(list) {
             let tmp = self.path.with_extension("json.new");

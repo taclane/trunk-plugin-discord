@@ -9,8 +9,7 @@ authors = ["Taclane"]
 publish = false
 
 [dependencies]
-# SDK 0.9.0 (calls.query, for /recent) is in Trunk Recorder Pro v0.3.0 but not on crates.io yet.
-trunk-recorder-plugin = { git = "https://github.com/taclane/trunk-recorder-pro", branch = "feature/plugin-api" }
+trunk-recorder-plugin = "0.15.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
