@@ -42,6 +42,8 @@ pub enum Post {
     Dm { users: Vec<u64>, embed: Box<CreateEmbed>, file: Option<std::path::PathBuf> },
     /// Bring the status boards up to date.
     Boards,
+    /// One message to each of these channels (and its mention): a Health or Log feed's.
+    Embed { to: Vec<(u64, String)>, embed: Box<CreateEmbed> },
     /// A day's digest, to these channels.
     Digest { day: Box<crate::digest::Day>, channels: Vec<u64> },
 }
@@ -129,7 +131,7 @@ pub async fn poster(shared: Arc<Shared>, http: Arc<serenity::Http>, cache: Arc<s
                     }
                     match ChannelId::new(t.channel).send_message(&http, m).await {
                         Ok(_) => drop(shared.posted.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
-                        Err(e) => shared.host.warn(format!("couldn't post to channel {}: {e}", t.channel)),
+                        Err(e) => shared.failed(format!("couldn't post to channel {}: {e}", t.channel)),
                     }
                 }
             }
@@ -148,7 +150,7 @@ pub async fn poster(shared: Arc<Shared>, http: Arc<serenity::Http>, cache: Arc<s
                         None => match serenity::UserId::new(u).create_dm_channel(&http).await {
                             Ok(c) => *dms.entry(u).or_insert(c.id),
                             Err(e) => {
-                                shared.host.warn(format!("couldn't message user {u}: {e}"));
+                                shared.failed(format!("couldn't message user {u}: {e}"));
                                 continue;
                             }
                         },
@@ -158,7 +160,17 @@ pub async fn poster(shared: Arc<Shared>, http: Arc<serenity::Http>, cache: Arc<s
                         m = m.add_file(CreateAttachment::bytes(b.clone(), n.clone()));
                     }
                     if let Err(e) = ch.send_message(&http, m).await {
-                        shared.host.warn(format!("couldn't message user {u} (their DMs may be closed): {e}"));
+                        shared.failed(format!("couldn't message user {u} (their DMs may be closed): {e}"));
+                    }
+                }
+            }
+            Post::Embed { to, embed } => {
+                for (ch, mention) in to {
+                    let m = CreateMessage::new().content(mention).embed((*embed).clone());
+                    if let Err(e) = ChannelId::new(ch).send_message(&http, m).await {
+                        shared.failed(format!("couldn't post to channel {ch}: {e}"));
+                    } else {
+                        shared.posted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -172,7 +184,7 @@ pub async fn poster(shared: Arc<Shared>, http: Arc<serenity::Http>, cache: Arc<s
                     let c = crate::digest::components(&day, "Daily digest", RED);
                     for ch in channels {
                         if let Err(e) = r.post_v2(ch, c.clone()).await {
-                            shared.host.warn(format!("couldn't post the digest in channel {ch}: {e}"));
+                            shared.failed(format!("couldn't post the digest in channel {ch}: {e}"));
                         }
                     }
                 }
@@ -193,7 +205,7 @@ pub async fn poster(shared: Arc<Shared>, http: Arc<serenity::Http>, cache: Arc<s
                     }
                     match ch.send_message(&http, CreateMessage::new().embed(embed)).await {
                         Ok(m) => drop(rates.insert(channel, m.id)),
-                        Err(e) => shared.host.warn(format!("couldn't post the decode rates to channel {channel}: {e}")),
+                        Err(e) => shared.failed(format!("couldn't post the decode rates to channel {channel}: {e}")),
                     }
                 }
             }

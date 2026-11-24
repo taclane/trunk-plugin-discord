@@ -50,6 +50,15 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
         menus::menu_mute(),
         menus::menu_recent(),
         crate::setup::setup(),
+        crate::admin::ping(),
+        crate::admin::health(),
+        crate::admin::sites(),
+        crate::admin::about(),
+        crate::admin::today(),
+        crate::admin::help(),
+        crate::admin::check(),
+        crate::admin::log(),
+        crate::admin::test(),
     ]
 }
 
@@ -535,6 +544,10 @@ enum What {
     Tone,
     #[name = "Daily digest (at midnight)"]
     Digest,
+    #[name = "TRP's warnings and errors"]
+    Log,
+    #[name = "Control channels lost and found"]
+    Health,
 }
 
 impl From<What> for Event {
@@ -547,6 +560,8 @@ impl From<What> for Event {
             What::Signal => Event::Signal,
             What::Tone => Event::Tone,
             What::Digest => Event::Digest,
+            What::Log => Event::Log,
+            What::Health => Event::Health,
         }
     }
 }

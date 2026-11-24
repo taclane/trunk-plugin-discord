@@ -19,7 +19,7 @@ use crate::state::Shared;
 const PREFIX: &str = "trp-setup";
 
 /// The kinds of feed a channel can get, in the dropdown's order.
-const KINDS: [(Event, &str); 7] = [
+const KINDS: [(Event, &str); 9] = [
     (Event::Call, "Each recorded call, with its recording"),
     (Event::Start, "Each call as it starts: a live log"),
     (Event::Emergency, "Each emergency, once, as it's flagged"),
@@ -27,6 +27,8 @@ const KINDS: [(Event, &str); 7] = [
     (Event::Tone, "A thread for each talkgroup any tone is heard on"),
     (Event::Rates, "The control channels' decode rates, one message kept current"),
     (Event::Digest, "The day's figures, at midnight"),
+    (Event::Health, "A control channel lost, and found again"),
+    (Event::Log, "TRP's warnings and errors, as they're logged"),
 ];
 
 fn value(e: Event) -> &'static str {
@@ -38,6 +40,8 @@ fn value(e: Event) -> &'static str {
         Event::Tone => "tone",
         Event::Rates => "rates",
         Event::Digest => "digest",
+        Event::Log => "log",
+        Event::Health => "health",
     }
 }
 

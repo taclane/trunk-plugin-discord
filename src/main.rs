@@ -4,6 +4,7 @@
 //! in its data folder.
 
 mod access;
+mod admin;
 mod alerts;
 mod board;
 mod bot;
@@ -24,10 +25,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use trunk_recorder_plugin::{
-    format, topic, AudioChunk, CallInfo, CallsPage, ConcludedCall, Host, Manifest, NoConfig, Outcome, Page, Plugin, Setup, State, Status, TonePatternEvent,
+    format, topic, AudioChunk, CallInfo, CallsPage, ConcludedCall, Host, LogLine, Manifest, NoConfig, Outcome, Page, Plugin, Setup, State, Status,
+    TonePatternEvent,
 };
 
+use poise::serenity_prelude as serenity;
+
 use crate::post::{Post, To};
+
+/// How long a control channel is gone before a Health feed says so (a site hunting briefly isn't news).
+const LOST_AFTER_S: f64 = 30.0;
 use crate::settings::{Event, Settings};
 use crate::state::Shared;
 
@@ -123,6 +130,7 @@ impl Plugin for Discord {
                 topic::STATUS.into(),
                 topic::TONE_PATTERN.into(),
                 topic::AUDIO.into(),
+                topic::LOG.into(),
             ],
             audio_formats: vec![format::M4A.into()],
             page: Some(Page { title: "Discord".into() }),
@@ -153,6 +161,7 @@ impl Plugin for Discord {
             })
             .collect();
         let shared = Arc::new(Shared::new(host, setup.config, systems, setup.data_dir.clone()));
+        *shared.trp.lock().unwrap() = setup.host.clone();
         let mut d = Discord { shared, rt, bot: None, emergencies: HashSet::new(), rates_at: None };
         d.restart();
         Ok(d)
@@ -208,6 +217,7 @@ impl Plugin for Discord {
     }
 
     fn call_start(&mut self, c: CallInfo) {
+        self.shared.heard();
         self.shared.count_call();
         let to = self.to(Event::Start, &c.short_name, c.talkgroup, None);
         if !to.is_empty() {
@@ -227,6 +237,7 @@ impl Plugin for Discord {
     }
 
     fn call_end(&mut self, c: CallInfo) {
+        self.shared.heard();
         self.emergency(&c);
         self.speakers(&c);
         self.emergencies.remove(&c.id);
@@ -250,6 +261,7 @@ impl Plugin for Discord {
     }
 
     fn tone_pattern(&mut self, t: TonePatternEvent) {
+        self.shared.heard();
         for s in &t.pattern.signals {
             let name = thread::signal_name(s);
             self.shared.digest.signal(&name);
@@ -275,6 +287,7 @@ impl Plugin for Discord {
     }
 
     fn call_concluded(&mut self, c: ConcludedCall) {
+        self.shared.heard();
         let r = &c.call;
         self.shared.digest.call(&r.short_name, r.talkgroup, &r.talkgroup_tag, r.call_length, r.emergency);
         let alerts: Vec<alerts::Alert> = self.shared.alerts.all().into_iter().filter(|a| a.takes_call(&r.short_name, r.talkgroup, r.emergency)).collect();
@@ -297,18 +310,88 @@ impl Plugin for Discord {
         self.shared.post(Post::Call { call: Box::new(c), to });
     }
 
+    fn log_line(&mut self, l: LogLine) {
+        self.shared.logged(l);
+    }
+
     fn status(&mut self, s: Status) {
+        self.shared.heard();
+        // (Site, what happened, its colour) for the Health feeds.
+        let mut news: Vec<(String, String, String, u32)> = Vec::new();
         {
             let mut rates = self.shared.rates.lock().unwrap();
-            for sys in s.systems.iter().filter(|x| x.scope.control_channel_hz.is_some() || x.decode_rate > 0.0) {
+            for sys in &s.systems {
                 let at = &sys.scope;
                 let site = if at.site_name.is_empty() { &at.short_name } else { &at.site_name };
-                let r = rates.entry(site.clone()).or_default();
-                r.system = at.short_name.clone();
-                r.control_channel_hz = at.control_channel_hz;
-                r.active = sys.active_calls;
-                r.recording = sys.recording;
-                r.push(sys.decode_rate, s.time);
+                let mhz = |hz: u64| format!("{:.5} MHz", hz as f64 / 1e6);
+                if at.control_channel_hz.is_some() || sys.decode_rate > 0.0 {
+                    let r = rates.entry(site.clone()).or_default();
+                    r.system = at.short_name.clone();
+                    if let (Some(lost), true) = (r.lost_at.take(), std::mem::take(&mut r.said_lost)) {
+                        let on = at.control_channel_hz.map_or(String::new(), |hz| format!(" on {}", mhz(hz)));
+                        news.push((
+                            at.short_name.clone(),
+                            site.clone(),
+                            format!("Control channel found again{on}, after {}", crate::state::span((s.time - lost).max(0.0) as u64)),
+                            post::GREEN,
+                        ));
+                    }
+                    r.control_channel_hz = at.control_channel_hz;
+                    r.identity = at.identity;
+                    r.protocol = at.protocol.clone();
+                    r.active = sys.active_calls;
+                    r.recording = sys.recording;
+                    r.push(sys.decode_rate, s.time);
+                } else if let Some(r) = rates.get_mut(site) {
+                    // (One it had: lost. Never one, as a conventional system: nothing to lose.)
+                    let lost = *r.lost_at.get_or_insert(s.time);
+                    r.push(0.0, s.time);
+                    r.active = sys.active_calls;
+                    r.recording = sys.recording;
+                    if !r.said_lost && s.time - lost >= LOST_AFTER_S {
+                        r.said_lost = true;
+                        let was = r.control_channel_hz.map_or(String::new(), |hz| format!(" (was {})", mhz(hz)));
+                        news.push((
+                            at.short_name.clone(),
+                            site.clone(),
+                            format!("Control channel lost{was}: no calls are followed until it's found"),
+                            post::RED,
+                        ));
+                    }
+                }
+            }
+        }
+        let feeds = self.shared.feeds();
+        for (system, site, text, color) in news {
+            self.shared.host.info(format!("{site}: {text}"));
+            let to: Vec<(u64, String)> = feeds
+                .iter()
+                .filter(|f| f.enabled && f.event == Event::Health && (f.systems.is_empty() || f.systems.iter().any(|x| x.eq_ignore_ascii_case(&system))))
+                .filter_map(|f| Some((f.channel_id()?, f.mention.clone())))
+                .collect();
+            if !to.is_empty() {
+                let e = serenity::CreateEmbed::new().title(site).description(text).color(color).timestamp(serenity::Timestamp::now());
+                self.shared.post(Post::Embed { to, embed: Box::new(e) });
+            }
+        }
+        // TRP's log since the last status, to each Log feed: what it takes, in one message.
+        let lines = std::mem::take(&mut *self.shared.log_pending.lock().unwrap());
+        if !lines.is_empty() {
+            for f in feeds.iter().filter(|f| f.enabled && f.event == Event::Log) {
+                let Some(ch) = f.channel_id() else { continue };
+                let mine: Vec<&LogLine> = lines.iter().filter(|l| f.log_level.takes(&l.level)).collect();
+                if mine.is_empty() {
+                    continue;
+                }
+                let worst = if mine.iter().any(|l| crate::settings::LogLevel::Error.takes(&l.level)) {
+                    post::RED
+                } else if mine.iter().any(|l| l.level == "warning") {
+                    0xe0a030
+                } else {
+                    post::GRAY
+                };
+                let e = serenity::CreateEmbed::new().description(admin::log_block(&mine, 4000)).color(worst).timestamp(serenity::Timestamp::now());
+                self.shared.post(Post::Embed { to: vec![(ch, f.mention.clone())], embed: Box::new(e) });
             }
         }
         if self.rates_at.is_some_and(|t| t.elapsed() < RATES_EVERY) {

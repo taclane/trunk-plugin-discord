@@ -36,7 +36,10 @@ impl RestError {
 
 impl Rest {
     pub fn new(token: &str) -> Rest {
-        let http = reqwest::Client::builder().user_agent("DiscordBot (https://github.com/TrunkRecorder/trunk-plugin-discord, 0.1)").build().unwrap_or_default();
+        let http = reqwest::Client::builder()
+            .user_agent(concat!("DiscordBot (", env!("CARGO_PKG_REPOSITORY"), ", ", env!("CARGO_PKG_VERSION"), ")"))
+            .build()
+            .unwrap_or_default();
         Rest { http, token: token.to_string() }
     }
 

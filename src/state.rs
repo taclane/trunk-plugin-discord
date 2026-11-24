@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use poise::serenity_prelude as serenity;
 use tokio::sync::{mpsc, oneshot};
-use trunk_recorder_plugin::{CallInfo, CallsPage, Host, SystemInfo};
+use trunk_recorder_plugin::{CallInfo, CallsPage, Host, HostInfo, LogLine, SiteIdentity, SystemInfo};
 
 use crate::settings::{Feed, Server, Settings};
 
@@ -20,6 +20,9 @@ const SYSTEMS: &str = "systems.json";
 
 /// How long TRP has to answer a save before the plugin says it can't save.
 const SAVE_ANSWER: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// TRP's warnings and errors kept, for /log.
+pub const LOG_KEEP: usize = 200;
 
 /// Decode rate samples kept per system (a status every few seconds).
 pub const HISTORY: usize = 120;
@@ -61,6 +64,17 @@ pub struct Shared {
     pub only_guild: Mutex<Option<u64>>,
     /// To the bot's poster, while a bot runs.
     pub posts: Mutex<Option<mpsc::UnboundedSender<crate::post::Post>>>,
+    /// When TRP last sent anything (a status, a call): to tell a quiet link from a quiet air.
+    pub heard: Mutex<Option<Instant>>,
+    /// TRP's latest warnings and errors (`log`), for /log.
+    pub log: Mutex<VecDeque<LogLine>>,
+    /// Lines for the Log feeds, posted at the next status.
+    pub log_pending: Mutex<Vec<LogLine>>,
+    /// Posts that failed, and the latest one's why (and when).
+    pub failures: AtomicU64,
+    pub last_failure: Mutex<Option<(Instant, String)>>,
+    /// The TRP it runs in: its name and version.
+    pub trp: Mutex<HostInfo>,
     /// The commands as built, to register in each server with its access ([`crate::access::commands_for`]).
     pub commands: Mutex<Vec<serenity::CreateCommand>>,
 }
@@ -95,6 +109,12 @@ impl Shared {
             data_dir,
             posts: Mutex::new(None),
             commands: Mutex::default(),
+            heard: Mutex::default(),
+            log: Mutex::default(),
+            log_pending: Mutex::default(),
+            failures: AtomicU64::new(0),
+            last_failure: Mutex::default(),
+            trp: Mutex::default(),
         };
         sh.follow_renames();
         sh
@@ -266,6 +286,38 @@ impl Shared {
         }
     }
 
+    /// TRP sent something.
+    pub fn heard(&self) {
+        *self.heard.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// A post failed: why, to the log and /health.
+    pub fn failed(&self, why: String) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        self.host.warn(why.clone());
+        *self.last_failure.lock().unwrap() = Some((Instant::now(), why));
+    }
+
+    /// A line TRP logged: kept for /log (warnings and worse), and for the Log feeds that take it.
+    pub fn logged(&self, line: LogLine) {
+        let wants = self.feeds().iter().any(|f| f.enabled && f.event == crate::settings::Event::Log && f.log_level.takes(&line.level));
+        if wants {
+            let mut p = self.log_pending.lock().unwrap();
+            // (A burst: the latest are what matter.)
+            if p.len() >= 100 {
+                p.remove(0);
+            }
+            p.push(line.clone());
+        }
+        if crate::settings::LogLevel::Warning.takes(&line.level) {
+            let mut l = self.log.lock().unwrap();
+            if l.len() >= LOG_KEEP {
+                l.pop_front();
+            }
+            l.push_back(line);
+        }
+    }
+
     pub fn rest(&self) -> Option<crate::rest::Rest> {
         self.rest.lock().unwrap().clone()
     }
@@ -310,6 +362,12 @@ pub struct Rates {
     /// Seconds between the last two statuses.
     pub interval_s: f64,
     pub last: Option<f64>,
+    /// What its control channel says it is, and its protocol (`p25`…).
+    pub identity: SiteIdentity,
+    pub protocol: String,
+    /// When its control channel was lost (none: it has one), and whether a Health feed was told.
+    pub lost_at: Option<f64>,
+    pub said_lost: bool,
 }
 
 impl Rates {

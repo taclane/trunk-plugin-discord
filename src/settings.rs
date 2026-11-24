@@ -286,6 +286,37 @@ pub struct Feed {
     ///
     /// Text above each post: mentions go here (@everyone, <@user id>, <@&role id>).
     pub mention: String,
+    /// Lines at least
+    ///
+    /// The least serious of TRP's log lines it posts.
+    #[schemars(extend("x-when" = { "event": "log" }))]
+    pub log_level: LogLevel,
+}
+
+/// How serious a log line is, at least.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    /// Info
+    Info,
+    /// Warnings
+    #[default]
+    Warning,
+    /// Errors
+    Error,
+}
+
+impl LogLevel {
+    /// A line TRP logged at `level` (its name: `info`, `warning`, `error`, `fatal`…) is one.
+    pub fn takes(self, level: &str) -> bool {
+        let rank = match level {
+            "trace" | "debug" => 0,
+            "info" => 1,
+            "warning" => 2,
+            _ => 3,
+        };
+        rank > self as u8
+    }
 }
 
 impl Default for Feed {
@@ -306,6 +337,7 @@ impl Default for Feed {
             live: false,
             min_length_s: 0.0,
             mention: String::new(),
+            log_level: LogLevel::Warning,
         }
     }
 }
@@ -328,6 +360,10 @@ pub enum Event {
     Tone,
     /// Daily digest
     Digest,
+    /// TRP's warnings and errors
+    Log,
+    /// Control channels lost and found
+    Health,
 }
 
 impl Event {
@@ -341,6 +377,8 @@ impl Event {
             Event::Signal => "signal",
             Event::Tone => "tone",
             Event::Digest => "digest",
+            Event::Log => "log",
+            Event::Health => "health",
         }
     }
 
@@ -358,6 +396,8 @@ impl Event {
             Event::Signal => "signals (a thread for each talkgroup)",
             Event::Tone => "tones (a thread for each talkgroup)",
             Event::Digest => "the daily digest",
+            Event::Log => "TRP's log (warnings and errors)",
+            Event::Health => "control channels lost and found",
         }
     }
 }
@@ -674,6 +714,13 @@ mod tests {
         assert!(s.invite_link.ends_with("client_id=1"));
         let saved = s.to_save();
         assert!(saved["servers"][0]["feeds"][0].get("server").is_none(), "{saved:?}");
+    }
+
+    #[test]
+    fn a_log_feed_takes_lines_as_serious_as_it_says() {
+        assert!(LogLevel::Warning.takes("warning") && LogLevel::Warning.takes("error") && LogLevel::Warning.takes("fatal"));
+        assert!(!LogLevel::Warning.takes("info") && LogLevel::Info.takes("info") && !LogLevel::Info.takes("debug"));
+        assert!(!LogLevel::Error.takes("warning") && LogLevel::Error.takes("error"));
     }
 
     /// The README's example settings are ones the plugin takes.
