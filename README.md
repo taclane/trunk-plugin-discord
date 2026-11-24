@@ -1,7 +1,8 @@
 # Discord
 
 A [Trunk Recorder Pro](https://github.com/TrunkRecorder/trunk-recorder-pro) plugin: a Discord bot
-that posts what TRP hears to channels, and takes slash commands.
+that posts what TRP hears to channels, and takes slash commands. It needs Trunk Recorder Pro 0.5.0
+or later.
 
 It posts **feeds**. Each one sends one kind of thing to one channel:
 
@@ -160,11 +161,5 @@ some systems or talkgroups. Volume and chime are options on `/setup`.
 **Back in TRP:** the page's **Servers** list has each server the bot is in, with what
 `/setup` and `/feed` set, by name. Change it there or in Discord: either end shows the other's
 changes. A server can also be added there by its ID and set up on the page alone. The plugin's
-status says what's wrong, such as a channel the bot can't see. This needs a version of TRP whose plugins
-can save their settings (`settings.save`); on an older one, what's set in Discord lasts only until
-the plugin restarts, and the status says so.
-
-Setup made in Discord with version 0.1 (kept in the data folder as `servers.json` and
-`feeds.json`) is folded into the settings the first time the bot logs in, and those files are
-renamed `….migrated` once TRP has saved it.
+status says what's wrong, such as a channel the bot can't see.
 

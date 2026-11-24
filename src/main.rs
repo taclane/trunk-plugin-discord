@@ -353,7 +353,8 @@ mod tests {
     #[test]
     fn calls_are_answered_without_a_bot() {
         let dir = testing::temp_dir("discord-nobot");
-        let settings = json!({ "token": "", "feeds": [{ "name": "fire", "channel": "123456789012345678", "talkgroups": ["100-199"] }] });
+        let settings =
+            json!({ "token": "", "servers": [{ "id": "1", "feeds": [{ "name": "fire", "channel": "123456789012345678", "talkgroups": ["100-199"] }] }] });
         let out = testing::run::<Discord>([HostMessage::Hello(testing::hello(&dir, settings)), concluded(150), concluded(250)]);
         let results: Vec<(String, Outcome, String)> = out
             .messages
@@ -380,7 +381,7 @@ mod tests {
     #[test]
     fn bad_feeds_are_refused() {
         let dir = testing::temp_dir("discord-bad");
-        let settings = json!({ "feeds": [{ "name": "x", "channel": "#general" }] });
+        let settings = json!({ "servers": [{ "id": "1", "feeds": [{ "name": "x", "channel": "#general" }] }] });
         let out = testing::run::<Discord>([HostMessage::Hello(testing::hello(&dir, settings))]);
         assert!(
             out.messages.iter().any(|m| matches!(m, PluginMessage::Status { state: State::Error, message } if message.contains("channel ID"))),

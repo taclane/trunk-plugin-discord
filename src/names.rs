@@ -94,7 +94,6 @@ pub async fn keep_status(shared: Arc<Shared>, cache: Arc<serenity::Cache>) {
     let mut said: Option<(State, String)> = None;
     // (The servers' channels come just after login.)
     tokio::time::sleep(Duration::from_secs(3)).await;
-    shared.migrate();
     loop {
         if shared.posts.lock().unwrap().is_none() {
             return;

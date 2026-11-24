@@ -13,19 +13,6 @@ use trunk_recorder_plugin::{CallInfo, CallsPage, Host, SystemInfo};
 
 use crate::settings::{Feed, Server, Settings};
 
-/// Before Discord's changes were saved to the settings (0.1), they were kept in the data folder:
-/// the servers set up with /setup, and the feeds added with /feed. Folded into the settings once,
-/// then renamed `….migrated`.
-const OLD_SERVERS: &str = "servers.json";
-const OLD_FEEDS: &str = "feeds.json";
-
-/// What `/setup` set for a server, before 0.2 (`servers.json`).
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-struct OldServer {
-    live: crate::settings::LiveAudio,
-}
-
 /// Talkgroups muted by channel, in the plugin's data folder.
 const MUTES: &str = "mutes.json";
 /// Each system's short name by its id, as last seen: to follow a rename.
@@ -57,10 +44,8 @@ pub struct Shared {
     pub boards: crate::board::Boards,
     pub digest: crate::digest::Digest,
     pub alerts: crate::alerts::Alerts,
-    /// Saves sent to TRP and not answered yet (request, when), and the one that folds in
-    /// the old data folder's setup (its files are retired once it's saved).
+    /// Saves sent to TRP and not answered yet (request, when).
     pub saving: Mutex<Vec<(u64, Instant)>>,
-    pub migrating: Mutex<Option<u64>>,
     /// It's been said that TRP doesn't save the plugin's settings.
     pub cant_save: std::sync::atomic::AtomicBool,
     /// What the bot sees of Discord (set once it logs in): the names it fills in.
@@ -99,7 +84,6 @@ impl Shared {
             alerts: crate::alerts::Alerts::load(&data_dir),
             mutes: Mutex::new(mutes),
             saving: Mutex::default(),
-            migrating: Mutex::default(),
             cant_save: Default::default(),
             cache: Mutex::default(),
             renamed: tokio::sync::Notify::new(),
@@ -210,8 +194,7 @@ impl Shared {
             crate::names::fill(&mut s, &cache);
         }
         s.check()?;
-        // (As saved: what came before servers, still in them, is saved away too.)
-        if s.to_save() != was.to_save() || cur.has_old() {
+        if s.to_save() != was.to_save() {
             *cur = s.clone();
             drop(cur);
             self.save(&s);
@@ -253,18 +236,6 @@ impl Shared {
         if !ok {
             self.host.warn(format!("TRP didn't save the settings: {message}"));
         }
-        if *self.migrating.lock().unwrap() == Some(request) {
-            *self.migrating.lock().unwrap() = None;
-            if ok {
-                for f in [OLD_SERVERS, OLD_FEEDS] {
-                    let p = self.data_dir.join(f);
-                    if p.exists() {
-                        let _ = std::fs::rename(&p, p.with_extension("json.migrated"));
-                    }
-                }
-                self.host.info("the setup made in Discord before is in the settings now");
-            }
-        }
     }
 
     /// A save TRP hasn't answered in time: it can't save them (it's older than
@@ -275,62 +246,6 @@ impl Shared {
             self.host.warn(
                 "this version of TRP doesn't save plugins' settings (it needs settings.save): what's set in Discord lasts only until the plugin restarts",
             );
-        }
-    }
-
-    /// Fold what the data folder kept of Discord's setup before (0.1: `servers.json`,
-    /// `feeds.json`) into the settings, once the bot knows its servers; its files are retired once
-    /// that's saved.
-    pub fn migrate(&self) {
-        let read = |f: &str| std::fs::read(self.data_dir.join(f)).ok();
-        let (servers, feeds) = (read(OLD_SERVERS), read(OLD_FEEDS));
-        if servers.is_none() && feeds.is_none() {
-            return;
-        }
-        let servers: BTreeMap<u64, OldServer> = servers.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let feeds: Vec<Feed> = feeds.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let only = *self.only_guild.lock().unwrap();
-        let before = self.saving.lock().unwrap().len();
-        let r = self.edit(|s| {
-            let at = |g: u64, s: &mut Settings| match s.servers.iter().position(|x| x.guild() == Some(g)) {
-                Some(i) => i,
-                None => {
-                    s.servers.push(Server { id: g.to_string(), ..Default::default() });
-                    s.servers.len() - 1
-                }
-            };
-            for (g, o) in servers {
-                let i = at(g, s);
-                if s.servers[i].voice().is_none() && !o.live.channel.trim().is_empty() {
-                    s.servers[i].live = o.live;
-                }
-            }
-            for mut f in feeds {
-                let g = f.server.trim().parse().ok().or(only).or_else(|| (s.servers.len() == 1).then(|| s.servers[0].guild()).flatten());
-                let Some(g) = g else { continue };
-                let i = at(g, s);
-                if !s.servers[i].feeds.iter().any(|x| x.channel == f.channel && x.event == f.event && x.talkgroups == f.talkgroups && x.systems == f.systems) {
-                    f.server.clear();
-                    s.servers[i].feeds.push(f);
-                }
-            }
-            Ok(String::new())
-        });
-        match r {
-            Err(e) => self.host.warn(format!("couldn't fold the old Discord setup into the settings: {e}")),
-            Ok(_) => {
-                let saving = self.saving.lock().unwrap();
-                // (Nothing new in it: retired at once.)
-                let request = if saving.len() > before { saving.last().map(|(r, _)| *r) } else { None };
-                drop(saving);
-                match request {
-                    Some(r) => *self.migrating.lock().unwrap() = Some(r),
-                    None => {
-                        *self.migrating.lock().unwrap() = Some(0);
-                        self.saved(0, true, "");
-                    }
-                }
-            }
         }
     }
 
@@ -478,19 +393,12 @@ mod tests {
         assert_eq!(known.get(&8).map(String::as_str), Some("city"));
     }
 
-    /// What Discord changes is saved to the settings (settings.save), one save per change; the
-    /// old data folder's setup is folded in and its files retired once that save is answered.
+    /// What Discord changes is saved to the settings (settings.save), one save per change.
     #[test]
     fn discord_changes_are_saved_to_the_settings() {
         let dir = trunk_recorder_plugin::testing::temp_dir("discord-edit");
-        std::fs::write(dir.join(OLD_FEEDS), r#"[{"name":"fire","server":"42","channel":"9","event":"tone"}]"#).unwrap();
-        std::fs::write(dir.join(OLD_SERVERS), r#"{"42":{"name":"Test Server","live":{"channel":"55"}}}"#).unwrap();
         let (host, out) = trunk_recorder_plugin::testing::capture();
         let sh = Shared::new(host, Settings::default(), Vec::new(), dir.clone());
-        sh.migrate();
-        let s = sh.settings();
-        assert_eq!((s.servers.len(), s.servers[0].voice(), s.servers[0].feeds.len()), (1, Some(55), 1));
-        assert!(dir.join(OLD_FEEDS).exists(), "kept until the save is answered");
         let saves = || {
             out.output()
                 .messages
@@ -498,10 +406,17 @@ mod tests {
                 .filter_map(|m| if let trunk_recorder_plugin::PluginMessage::SettingsSave { request, settings } = m { Some((request, settings)) } else { None })
                 .collect::<Vec<_>>()
         };
+        let r = sh.edit_server(42, |s| {
+            s.live.channel = "55".into();
+            s.feeds.push(Feed { channel: "9".into(), event: crate::settings::Event::Tone, ..Default::default() });
+            Ok(String::new())
+        });
+        assert!(r.is_ok());
+        let s = sh.settings();
+        assert_eq!((s.servers.len(), s.servers[0].voice(), s.servers[0].feeds.len()), (1, Some(55), 1));
         let (request, saved) = saves().pop().expect("saved");
         assert_eq!(saved["servers"][0]["feeds"][0]["channel"], "9");
         sh.saved(request, true, "");
-        assert!(!dir.join(OLD_FEEDS).exists() && dir.join("feeds.json.migrated").exists());
         // A change from Discord: one more save; an Err, none.
         assert!(sh.edit_server(42, |s| Ok(std::mem::take(&mut s.live.channel))).is_ok());
         assert!(sh.edit_server(42, |_| Err("no".into())).is_err());

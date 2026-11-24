@@ -56,28 +56,6 @@ pub struct Settings {
     /// again. 0: they post until someone presses Stop.
     #[schemars(range(min = 0.0), extend("default" = 30))]
     pub thread_timeout_min: f64,
-
-    // ─── Before 0.2: folded into what replaced them ───
-    /// (`trpAddress`, as it was called.)
-    #[schemars(skip)]
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub recorder_address: String,
-    // One server's, before servers: folded into `servers`.
-    #[schemars(skip)]
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub server: String,
-    #[schemars(skip)]
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub live_channel: String,
-    #[schemars(skip)]
-    #[serde(skip_serializing_if = "is_zero")]
-    pub live_gain_db: f64,
-    #[schemars(skip)]
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub live_chime: String,
-    #[schemars(skip)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub feeds: Vec<Feed>,
 }
 
 impl Default for Settings {
@@ -87,15 +65,9 @@ impl Default for Settings {
             invite_link: String::new(),
             status_text: "Archive the Airwaves".into(),
             trp_address: String::new(),
-            recorder_address: String::new(),
             servers: Vec::new(),
             live_phrases: false,
             thread_timeout_min: 30.0,
-            server: String::new(),
-            live_channel: String::new(),
-            live_gain_db: 0.0,
-            live_chime: String::new(),
-            feeds: Vec::new(),
         }
     }
 }
@@ -105,10 +77,6 @@ impl Settings {
     pub fn thread_timeout_s(&self) -> Option<f64> {
         (self.thread_timeout_min > 0.0).then_some(self.thread_timeout_min * 60.0)
     }
-}
-
-fn is_zero(x: &f64) -> bool {
-    *x == 0.0
 }
 
 /// Server
@@ -164,10 +132,6 @@ pub struct LiveAudio {
     /// Takes effect at once.
     #[schemars(range(min = -300.0, max = 300.0), extend("x-slider" = true, "multipleOf" = 25.0))]
     pub volume: f64,
-    /// Before 0.3: the gain in dB, folded into `volume`.
-    #[schemars(skip)]
-    #[serde(skip_serializing)]
-    pub gain_db: f64,
     /// Chime
     ///
     /// A soundboard sound's ID, played as a tone thread's audio starts (right-click the sound,
@@ -182,7 +146,7 @@ pub struct LiveAudio {
 
 impl Default for LiveAudio {
     fn default() -> Self {
-        LiveAudio { channel: String::new(), channel_name: String::new(), volume: 0.0, gain_db: 0.0, chime: String::new(), log_speakers: true }
+        LiveAudio { channel: String::new(), channel_name: String::new(), volume: 0.0, chime: String::new(), log_speakers: true }
     }
 }
 
@@ -410,15 +374,6 @@ impl Feed {
         }
     }
 
-    /// Who it is, among others: its name, else its channel and kind.
-    fn key(&self) -> String {
-        if self.name.trim().is_empty() {
-            format!("{}:{:?}", self.channel.trim(), self.event)
-        } else {
-            self.name.trim().to_lowercase()
-        }
-    }
-
     /// One line on what it is, for /feed list.
     pub fn describe(&self) -> String {
         let mut s = if self.name.trim().is_empty() { self.event.label().to_string() } else { format!("**{}**: {}", self.name, self.event.label()) };
@@ -471,65 +426,15 @@ pub fn same_signal(a: &str, b: &str) -> bool {
 }
 
 impl Settings {
-    /// As they're used: what came before servers folded into one (whose ID, when that had none,
-    /// is the one server the bot is in, once it's known), and each server's feeds marked with it.
+    /// As they're used: a server without an ID is the one server the bot is in (once that's
+    /// known), and each server's feeds are marked with it.
     pub fn normalized(mut self, only_guild: Option<u64>) -> Settings {
-        let old_address = std::mem::take(&mut self.recorder_address);
-        if self.trp_address.trim().is_empty() {
-            self.trp_address = old_address;
-        }
-        if !self.feeds.is_empty() || !self.live_channel.trim().is_empty() || !self.server.trim().is_empty() {
-            let old = Server {
-                name: "Discord".into(),
-                id: std::mem::take(&mut self.server),
-                live: LiveAudio {
-                    channel: std::mem::take(&mut self.live_channel),
-                    gain_db: std::mem::take(&mut self.live_gain_db),
-                    chime: std::mem::take(&mut self.live_chime),
-                    ..Default::default()
-                },
-                feeds: std::mem::take(&mut self.feeds),
-            };
-            // Into the server it was: the one with its ID, or, having none, the bot's one server
-            // (or the only one listed). Its feeds that are there already by name aren't added again.
-            let at = self.servers.iter().position(|s| s.id.trim() == old.id.trim()).or_else(|| {
-                old.id.trim().is_empty().then(|| self.servers.iter().position(|s| only_guild.is_some_and(|g| s.guild() == Some(g)))).flatten().or((self
-                    .servers
-                    .len()
-                    == 1
-                    && old.id.trim().is_empty())
-                .then_some(0))
-            });
-            match at {
-                Some(i) => {
-                    let s = &mut self.servers[i];
-                    for f in old.feeds {
-                        if !s.feeds.iter().any(|x| x.key() == f.key()) {
-                            s.feeds.push(f);
-                        }
-                    }
-                    if s.voice().is_none() && !old.live.channel.trim().is_empty() {
-                        s.live = old.live;
-                    }
-                }
-                None => self.servers.push(old),
-            }
-        }
         if let Some(g) = only_guild {
             for s in self.servers.iter_mut().filter(|s| s.id.trim().is_empty()) {
                 s.id = g.to_string();
             }
         }
         for s in &mut self.servers {
-            // (Before 0.3, a tone feed naming signals was what's now Signals.)
-            for f in s.feeds.iter_mut().filter(|f| f.event == Event::Tone && !f.signals.is_empty()) {
-                f.event = Event::Signal;
-            }
-            // (A gain in dB, from before: the nearest step of volume.)
-            let db = std::mem::take(&mut s.live.gain_db);
-            if db != 0.0 && s.live.volume == 0.0 {
-                s.live.volume = (db / DB_PER_STEP).round().clamp(-12.0, 12.0) * 25.0;
-            }
             let id = s.id.trim().to_string();
             for f in &mut s.feeds {
                 f.server = id.clone();
@@ -599,19 +504,7 @@ impl Settings {
         *self != before
     }
 
-    /// They still have what came before servers (folded into them as they're used).
-    pub fn has_old(&self) -> bool {
-        !self.recorder_address.is_empty()
-            || !self.server.is_empty()
-            || !self.live_channel.is_empty()
-            || self.live_gain_db != 0.0
-            || !self.live_chime.is_empty()
-            || !self.feeds.is_empty()
-            || self.servers.iter().any(|s| s.live.gain_db != 0.0 || s.feeds.iter().any(|f| f.event == Event::Tone && !f.signals.is_empty()))
-    }
-
-    /// What they're saved to TRP as (`settings.save`): the servers, and nulls for what
-    /// came before servers (folded into them).
+    /// What they're saved to TRP as (`settings.save`): what Discord can change.
     pub fn to_save(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut servers = self.servers.clone();
         for f in servers.iter_mut().flat_map(|s| s.feeds.iter_mut()) {
@@ -621,9 +514,6 @@ impl Settings {
         m.insert("servers".into(), serde_json::to_value(&servers).unwrap_or_default());
         m.insert("trpAddress".into(), self.trp_address.clone().into());
         m.insert("inviteLink".into(), if self.invite_link.is_empty() { serde_json::Value::Null } else { self.invite_link.clone().into() });
-        for k in ["recorderAddress", "server", "liveChannel", "liveGainDb", "liveChime", "feeds"] {
-            m.insert(k.into(), serde_json::Value::Null);
-        }
         m
     }
 
@@ -639,7 +529,6 @@ impl Settings {
             }
             Ok(())
         };
-        check_feeds(&self.feeds)?;
         for s in &self.servers {
             let what = format!("server {}", s.id.trim());
             if !s.id.trim().is_empty() && s.guild().is_none() {
@@ -695,50 +584,6 @@ mod tests {
         assert!(!Feed { event: Event::Call, ..Default::default() }.picks_tone(&named));
     }
 
-    /// A tone feed from before that names signals is a Signals feed; one naming none, any tone.
-    #[test]
-    fn old_tone_feeds_naming_signals_become_signals_feeds() {
-        let old: Settings = serde_json::from_value(serde_json::json!({ "servers": [{ "id": "1", "feeds": [
-            { "channel": "9", "event": "tone", "signals": ["county:PD_PAGE"] },
-            { "channel": "8", "event": "tone", "systems": ["CLMRN"] } ] }] }))
-        .unwrap();
-        assert!(old.has_old());
-        let s = old.normalized(None);
-        assert_eq!(s.servers[0].feeds.iter().map(|f| f.event).collect::<Vec<_>>(), vec![Event::Signal, Event::Tone]);
-        assert!(!s.has_old());
-    }
-
-    /// One server's settings from before servers become a server of their own, its feeds
-    /// marked with it; with no ID, the bot's one server's.
-    #[test]
-    fn the_old_settings_become_a_server() {
-        let old: Settings = serde_json::from_value(
-            serde_json::json!({ "token": "t", "server": "", "liveChannel": "55", "feeds": [{ "name": "Feedz", "channel": "9", "event": "tone" }] }),
-        )
-        .unwrap();
-        let s = old.normalized(Some(42));
-        assert_eq!(s.servers.len(), 1);
-        assert_eq!((s.servers[0].id.as_str(), s.servers[0].voice()), ("42", Some(55)));
-        assert_eq!(s.all_feeds()[0].server, "42");
-        assert!(s.feeds.is_empty() && s.live_channel.is_empty());
-        // (Saved again, only the new shape.)
-        let v = serde_json::to_value(&s).unwrap();
-        assert!(v.get("feeds").is_none() && v.get("server").is_none(), "{v}");
-    }
-
-    /// Old settings left beside a server added on the page fold into it, not into a second one.
-    #[test]
-    fn old_settings_join_the_server_added_beside_them() {
-        let both: Settings = serde_json::from_value(serde_json::json!({
-            "server": "", "feeds": [{ "name": "Feedz", "channel": "9" }, { "name": "Old", "channel": "8" }],
-            "servers": [{ "name": "Test Server", "id": "42", "feeds": [{ "name": "feedz", "channel": "9" }] }]
-        }))
-        .unwrap();
-        let s = both.normalized(Some(42));
-        assert_eq!(s.servers.len(), 1);
-        assert_eq!(s.servers[0].feeds.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["feedz", "Old"]);
-    }
-
     /// A feed half filled in on the page (no channel yet) doesn't stop the rest being taken.
     #[test]
     fn a_feed_being_filled_in_is_left_out() {
@@ -763,15 +608,6 @@ mod tests {
 
     /// Names come from Discord: the server's, its voice channel's, each feed's after its channel
     /// and kind (numbered when two would share one); one the bot can't see keeps its own.
-    #[test]
-    fn a_gain_in_db_becomes_the_nearest_volume() {
-        let old: Settings = serde_json::from_value(serde_json::json!({ "servers": [{ "id": "1", "live": { "channel": "5", "gainDb": 6.4 } }] })).unwrap();
-        assert!(old.has_old());
-        let s = old.normalized(None);
-        assert_eq!((s.servers[0].live.volume, s.servers[0].live.db()), (100.0, 6.0));
-        assert!(!s.has_old() && !serde_json::to_string(&s.to_save()).unwrap().contains("gainDb"));
-    }
-
     #[test]
     fn names_are_filled_in_from_discord() {
         let feed = |ch: &str, e: Event| Feed { channel: ch.into(), event: e, ..Default::default() };
@@ -801,10 +637,15 @@ mod tests {
         assert_eq!(names, ["#dispatch call", "#dispatch call 2", "#dispatch tone", "#gone call"]);
         assert!(!s.named(None, guild, channel), "nothing new: nothing changed");
         assert!(s.invite_link.ends_with("client_id=1"));
-        let old: Settings = serde_json::from_value(serde_json::json!({ "recorderAddress": "http://scanner:8091" })).unwrap();
-        assert!(old.has_old() && old.clone().normalized(None).trp_address == "http://scanner:8091");
-        assert_eq!(old.normalized(None).to_save()["recorderAddress"], serde_json::Value::Null, "saved under its new name");
         let saved = s.to_save();
-        assert!(saved["feeds"].is_null() && saved["servers"][0]["feeds"][0].get("server").is_none(), "{saved:?}");
+        assert!(saved["servers"][0]["feeds"][0].get("server").is_none(), "{saved:?}");
+    }
+
+    /// The README's example settings are ones the plugin takes.
+    #[test]
+    fn the_example_settings_check() {
+        let s: Settings = serde_json::from_str(include_str!("../examples/settings.json")).unwrap();
+        assert_eq!(s.check(), Ok(()));
+        assert_eq!(s.servers[0].feeds.len(), 4);
     }
 }
