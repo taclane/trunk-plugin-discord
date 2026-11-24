@@ -1,0 +1,10 @@
+{
+  "token": "YOUR-BOT-TOKEN",
+  "server": "",
+  "trpAddress": "http://100.64.0.5:8091",
+  "feeds": [
+    { "name": "fire", "channel": "123456789012345678", "event": "call", "systems": ["county"], "talkgroups": ["100-199"], "mention": "<@&234567890123456789>" },
+    { "name": "emergencies", "channel": "123456789012345679", "event": "emergency", "mention": "@here" },
+    { "name": "rates", "channel": "123456789012345680", "event": "rates" }
+  ]
+}

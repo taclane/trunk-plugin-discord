@@ -1,0 +1,31 @@
+[package]
+name = "discord"
+version = "0.1.0"
+edition = "2021"
+description = "A Discord bot: posts calls, emergencies and decode rates to channels, and takes slash commands to say what goes where."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/taclane/trunk-plugin-discord"
+authors = ["Taclane"]
+publish = false
+
+[dependencies]
+# SDK 0.9.0 (calls.query, for /recent) is in Trunk Recorder Pro v0.3.0 but not on crates.io yet.
+trunk-recorder-plugin = { git = "https://github.com/taclane/trunk-recorder-pro", branch = "feature/plugin-api" }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+poise = "0.7.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+# Live audio in a voice channel; 0.6 speaks DAVE, Discord's voice encryption (required since 2026).
+songbird = { version = "0.6.1", default-features = false, features = ["driver", "gateway", "rustls", "serenity", "tungstenite"] }
+# (Only for its PCM decoder: songbird reads the live mix as raw f32 PCM through it.)
+symphonia = { version = "0.5", default-features = false, features = ["pcm"] }
+# (Only to switch on serenity's voice support for songbird: poise brings the rest.)
+serenity = { version = "0.12.5", default-features = false, features = ["voice"] }
+# What serenity 0.12 can't send or read yet (Components V2 boards, forum tags, voice status).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+strip = true
+lto = true
